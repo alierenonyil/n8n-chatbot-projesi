@@ -1,0 +1,131 @@
+{
+  "name": "AI Chatbot Multi-Platform",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-instagram",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-instagram",
+      "name": "Instagram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-whatsapp",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-messenger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-messenger",
+      "name": "Messenger Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Gelen mesajı normalize et ve platform bilgisini ekle\nconst inputData = items[0].json;\n\nlet normalizedMessage = {\n  userId: '',\n  message: '',\n  platform: '',\n  timestamp: new Date().toISOString(),\n  originalData: inputData\n};\n\n// Platform'a göre mesaj formatını düzenle\nif (inputData.object === 'instagram') {\n  normalizedMessage.platform = 'instagram';\n  normalizedMessage.userId = inputData.entry[0]?.messaging[0]?.sender?.id || '';\n  normalizedMessage.message = inputData.entry[0]?.messaging[0]?.message?.text || '';\n} else if (inputData.object === 'whatsapp_business_account') {\n  normalizedMessage.platform = 'whatsapp';\n  normalizedMessage.userId = inputData.entry[0]?.changes[0]?.value?.messages[0]?.from || '';\n  normalizedMessage.message = inputData.entry[0]?.changes[0]?.value?.messages[0]?.text?.body || '';\n} else if (inputData.object === 'page') {\n  normalizedMessage.platform = 'messenger';\n  normalizedMessage.userId = inputData.entry[0]?.messaging[0]?.sender?.id || '';\n  normalizedMessage.message = inputData.entry[0]?.messaging[0]?.message?.text || '';\n}\n\nreturn [normalizedMessage];"
+      },
+      "id": "message-normalizer",
+      "name": "Message Normalizer",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "operation": "findOne",
+        "collection": "chat_history",
+        "query": "{\n  \"userId\": \"{{ $json.userId }}\",\n  \"platform\": \"{{ $json.platform }}\"\n}",
+        "upsert": false,
+        "options": {}
+      },
+      "id": "get-chat-history",
+      "name": "Get Chat History",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [700, 400],
+      "credentials": {
+        "mongoDb": {
+          "id": "mongodb-credentials",
+          "name": "MongoDB Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Sohbet geçmişini ve yeni mesajı birleştir\nconst currentMessage = items[0].json;\nconst chatHistory = items[1]?.json || null;\n\nlet conversationHistory = [];\n\nif (chatHistory && chatHistory.messages) {\n  // Sadece son 10 mesajı al (bellek optimizasyonu için)\n  conversationHistory = chatHistory.messages.slice(-10);\n}\n\n// Yeni mesajı ekle\nconversationHistory.push({\n  role: 'user',\n  content: currentMessage.message,\n  timestamp: currentMessage.timestamp\n});\n\nconst aiPrompt = `Türkiye'de müşteri hizmetleri uzmanı olarak davran. Samimi, yardımsever ve profesyonel bir ton kullan. \n\nSohbet Geçmişi:\n${conversationHistory.map(msg => `${msg.role === 'user' ? 'Müşteri' : 'Sen'}: ${msg.content}`).join('\\n')}\n\nLütfen müşteriye uygun bir yanıt ver. Eğer önceki sohbetlerden bir bağlam varsa onu dikkate al.`;\n\nreturn [{\n  userId: currentMessage.userId,\n  platform: currentMessage.platform,\n  message: currentMessage.message,\n  timestamp: currentMessage.timestamp,\n  conversationHistory: conversationHistory,\n  aiPrompt: aiPrompt,\n  originalData: currentMessage.originalData\n}];"
+      },
+      "id": "prepare-ai-prompt",
+      "name": "Prepare AI Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "messages": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "Sen bir müşteri hizmetleri uzmanısın. Türkçe konuşuyorsun, samimi ve yardımseversin."
+            },
+            {
+              "role": "user",
+              "content": "={{ $json.aiPrompt }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "openai-chat",
+      "name": "OpenAI Chat",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1100, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// AI yanıtını işle ve sohbet geçmişini güncelle\nconst inputData = items[0].json;\nconst aiResponse = inputData.choices[0].message.content;\nconst userData = items[1].json;\n\n// Sohbet geçmişine AI yanıtını ekle\nuserData.conversationHistory.push({\n  role: 'assistant',\n  content: aiResponse,\n  timestamp: new Date().toISOString()\n});\n\nreturn [{\n  userId: userData.userId,\n  platform: userData.platform,\n  aiResponse: aiResponse,\n  conversationHistory: userData.conversationHistory,\n  originalData: userData.originalData\n}];"
+      },
+      "id": "process-ai-response",
+      "name": "Process AI Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1300, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "chat_history",
+        "query": "{\n  \"userId\": \"{{ $json.userId }}\",\n  \"platform\": \"{{ $json.platform }}\"\n}",
+        "updateDocument": "{\n  \"userId\": \"{{ $json.userId }}\",\n  \"platform\": \"{{ $json.platform }}\",\n  \"messages\": {{ JSON.stringify($json.conversationHistory) }},\n  \"lastUpdated\": \"{{ new Date().toISOString() }}\"\n}",\n        \"upsert\": true,\n        \"options\": {}\n      },\n      \"id\": \"update-chat-history\",\n      \"name\": \"Update Chat History\",\n      \"type\": \"n8n-nodes-base.mongoDb\",\n      \"typeVersion\": 1,\n      \"position\": [1500, 300],\n      \"credentials\": {\n        \"mongoDb\": {\n          \"id\": \"mongodb-credentials\",\n          \"name\": \"MongoDB Credentials\"\n        }\n      }\n    },\n    {\n      \"parameters\": {\n        \"conditions\": {\n          \"string\": [\n            {\n              \"value1\": \"={{ $json.platform }}\",\n              \"operation\": \"equal\",\n              \"value2\": \"instagram\"\n            }\n          ]\n        }\n      },\n      \"id\": \"platform-router\",\n      \"name\": \"Platform Router\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 1,\n      \"position\": [1500, 500]\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"https://graph.facebook.com/v18.0/{{ $json.originalData.entry[0].messaging[0].recipient.id }}/messages\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"Authorization\",\n              \"value\": \"Bearer YOUR_INSTAGRAM_ACCESS_TOKEN\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ]\n        },\n        \"sendBody\": true,\n        \"bodyParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"recipient\",\n              \"value\": \"{{ JSON.stringify({id: $json.userId}) }}\"\n            },\n            {\n              \"name\": \"message\",\n              \"value\": \"{{ JSON.stringify({text: $json.aiResponse}) }}\"\n            }\n          ]\n        }\n      },\n      \"id\": \"send-instagram-message\",\n      \"name\": \"Send Instagram Message\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4,\n      \"position\": [1700, 400]\n    },\n    {\n      \"parameters\": {\n        \"conditions\": {\n          \"string\": [\n            {\n              \"value1\": \"={{ $json.platform }}\",\n              \"operation\": \"equal\",\n              \"value2\": \"whatsapp\"\n            }\n          ]\n        }\n      },\n      \"id\": \"whatsapp-check\",\n      \"name\": \"WhatsApp Check\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 1,\n      \"position\": [1700, 600]\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"https://graph.facebook.com/v18.0/YOUR_PHONE_NUMBER_ID/messages\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"Authorization\",\n              \"value\": \"Bearer YOUR_WHATSAPP_ACCESS_TOKEN\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ]\n        },\n        \"sendBody\": true,\n        \"bodyParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"messaging_product\",\n              \"value\": \"whatsapp\"\n            },\n            {\n              \"name\": \"to\",\n              \"value\": \"{{ $json.userId }}\"\n            },\n            {\n              \"name\": \"text\",\n              \"value\": \"{{ JSON.stringify({body: $json.aiResponse}) }}\"\n            }\n          ]\n        }\n      },\n      \"id\": \"send-whatsapp-message\",\n      \"name\": \"Send WhatsApp Message\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4,\n      \"position\": [1900, 600]\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"https://graph.facebook.com/v18.0/me/messages\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"Authorization\",\n              \"value\": \"Bearer YOUR_MESSENGER_ACCESS_TOKEN\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ]\n        },\n        \"sendBody\": true,\n        \"bodyParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"recipient\",\n              \"value\": \"{{ JSON.stringify({id: $json.userId}) }}\"\n            },\n            {\n              \"name\": \"message\",\n              \"value\": \"{{ JSON.stringify({text: $json.aiResponse}) }}\"\n            }\n          ]\n        }\n      },\n      \"id\": \"send-messenger-message\",\n      \"name\": \"Send Messenger Message\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4,\n      \"position\": [1900, 800]\n    }\n  ],\n  \"connections\": {\n    \"Instagram Webhook\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Message Normalizer\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"WhatsApp Webhook\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Message Normalizer\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Messenger Webhook\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Message Normalizer\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Message Normalizer\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Get Chat History\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Get Chat History\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Prepare AI Prompt\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Prepare AI Prompt\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"OpenAI Chat\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"OpenAI Chat\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Process AI Response\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Process AI Response\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Update Chat History\",\n            \"type\": \"main\",\n            \"index\": 0\n          },\n          {\n            \"node\": \"Platform Router\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Platform Router\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Send Instagram Message\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ],\n        [\n          {\n            \"node\": \"WhatsApp Check\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"WhatsApp Check\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Send WhatsApp Message\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ],\n        [\n          {\n            \"node\": \"Send Messenger Message\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    }\n  },\n  \"active\": true,\n  \"settings\": {\n    \"timezone\": \"Europe/Istanbul\"\n  },\n  \"createdAt\": \"2025-01-01T00:00:00.000Z\",\n  \"updatedAt\": \"2025-01-01T00:00:00.000Z\",\n  \"id\": \"ai-chatbot-workflow\",\n  \"tags\": [\n    {\n      \"createdAt\": \"2025-01-01T00:00:00.000Z\",\n      \"updatedAt\": \"2025-01-01T00:00:00.000Z\",\n      \"id\": \"chatbot\",\n      \"name\": \"chatbot\"\n    }\n  ]\n}
