@@ -1,0 +1,16 @@
+# n8n credentials (asla commit etme!)
+*credentials*.json
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Log
+*.log
